@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Dict
@@ -21,6 +20,7 @@ OJ_TEMPLATE = Path(__file__).resolve().parent / "OJ-template.sh"
 
 AGENT_FLAGS = {"claude", "codex", "gemini", "qwen", "minimal"}
 SIMPLE_BASE_PORT = 18080
+MINIMAL_BASE_PORT = 8080
 MINIMAL_MODELS = {
     "deepseek_v3",
     "doubao_seed",
@@ -34,7 +34,10 @@ MINIMAL_MODELS = {
     "glm4_5",
     "longcat_flash_chat",
 }
-MINIMAL_DEFAULT_MODEL = next(iter(sorted(MINIMAL_MODELS)))
+MINIMAL_MODEL_LIST = sorted(MINIMAL_MODELS)
+MINIMAL_BASE_PORT = 8080
+MINIMAL_PORT_MAP = {model: MINIMAL_BASE_PORT + idx for idx, model in enumerate(MINIMAL_MODEL_LIST)}
+MINIMAL_DEFAULT_MODEL = MINIMAL_MODEL_LIST[0]
 CASE_FIELD_MAX_CHARS = 2000  # cap per-case text fields to keep reports small
 
 
@@ -104,22 +107,33 @@ def build_prompt(
     return "\n".join(lines)
 
 
-def run_agent(agent_label: str, agent_dir: Path, prompt: str, timeout_minutes: int, simple_model: str, log_path: Path):
+def run_agent(
+    agent_label: str,
+    agent_dir: Path,
+    prompt: str,
+    timeout_minutes: int,
+    simple_model: str,
+    log_path: Path,
+):
     is_minimal = agent_label == "minimal" or agent_label.startswith("minimal[")
-    if is_minimal:
-        quoted_prompt = shlex.quote(prompt)
-        cmd_str = (
-            f"conda activate minimalcodeagent && "
-            f"python /Users/panly/Documents/Minimal-CodeAgent/run_agent.py "
-            f"--prompt {quoted_prompt} --workdir {shlex.quote(str(agent_dir))}"
-        )
-        env = os.environ.copy()
-        env["ADK_MODEL"] = simple_model
-        cmd = ["bash", "-lc", cmd_str]
-    else:
-        cmd = ["ai-auto", "--agent", agent_label, "--prompt", prompt]
     start = time.time()
     try:
+        if is_minimal:
+            quoted_prompt = shlex.quote(prompt)
+            minimal_port = MINIMAL_PORT_MAP.get(simple_model, MINIMAL_PORT_MAP[MINIMAL_DEFAULT_MODEL])
+            activate = "source /Users/panly/Documents/Minimal-CodeAgent/.venv/bin/activate"
+            cmd = [
+                "bash",
+                "-lc",
+                (
+                    f"{activate} && "
+                    f"python /Users/panly/Documents/Minimal-CodeAgent/run_agent.py "
+                    f"--prompt {quoted_prompt} --workdir {shlex.quote(str(agent_dir))} "
+                    f"--port {minimal_port}"
+                ),
+            ]
+        else:
+            cmd = ["ai-auto", "--agent", agent_label, "--prompt", prompt]
         proc = subprocess.Popen(
             cmd,
             cwd=agent_dir,
@@ -127,7 +141,7 @@ def run_agent(agent_label: str, agent_dir: Path, prompt: str, timeout_minutes: i
             stderr=subprocess.PIPE,
             text=True,
             shell=False if not is_minimal else False,
-            env=env if is_minimal else None,
+            env=None,
         )
         try:
             stdout, stderr = proc.communicate(timeout=timeout_minutes * 60)
@@ -138,7 +152,10 @@ def run_agent(agent_label: str, agent_dir: Path, prompt: str, timeout_minutes: i
             status = "timeout"
     except FileNotFoundError:
         stdout = ""
-        stderr = "ai-auto not found; please install or adjust command"
+        if is_minimal:
+            stderr = "Minimal-CodeAgent environment missing; ensure .venv is available and adk is installed"
+        else:
+            stderr = "ai-auto not found; please install or adjust command"
         status = "not_found"
     elapsed = time.time() - start
     log_path.write_text((stdout or "") + "\n--- stderr ---\n" + (stderr or ""), encoding="utf-8")
@@ -205,8 +222,8 @@ def _run_eval_cmd(cmd: List[str], cwd: Path):
 
 def summarize(results: List[dict]):
     pass_count = sum(1 for r in results if r.get("status") == "AC")
-    times = [r.get("avg_time", 0.0) for r in results if r.get("avg_time") is not None]
-    avg_time = sum(times) / len(times) if times else 0.0
+    ac_times = [r.get("avg_time", 0.0) for r in results if r.get("status") == "AC" and r.get("avg_time") is not None]
+    avg_time = (sum(ac_times) / len(ac_times)) if ac_times else float("nan")
     def fmt(r):
         status = r.get("status")
         t = r.get("avg_time", 0.0)
@@ -244,7 +261,7 @@ def build_leaderboard(round_id: int, agents_data: dict):
                 "answer_path": str(data["agent_dir"]),
             }
         )
-    rows.sort(key=lambda x: (-x["pass_count"], x["avg_time"]))
+    rows.sort(key=lambda x: (-x["pass_count"], math.inf if math.isnan(x["avg_time"]) else x["avg_time"]))
 
     lb_dir = LEADERBOARD_ROOT / f"round_{round_id}"
     lb_dir.mkdir(parents=True, exist_ok=True)
@@ -304,7 +321,17 @@ def run_round(
             label = entry["label"]
             prompt, model_override, prompt_path = prompts[label]
             log_path = round_dir / f"{label}-run.log"
-            futures[executor.submit(run_agent, label, agent_dirs[label], prompt, timeout_minutes, model_override, log_path)] = label
+            futures[
+                executor.submit(
+                    run_agent,
+                    label,
+                    agent_dirs[label],
+                    prompt,
+                    timeout_minutes,
+                    model_override,
+                    log_path,
+                )
+            ] = label
         for fut in as_completed(futures):
             ag = futures[fut]
             run_infos[ag] = fut.result()
