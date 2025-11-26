@@ -35,6 +35,7 @@ MINIMAL_MODELS = {
     "longcat_flash_chat",
 }
 MINIMAL_DEFAULT_MODEL = next(iter(sorted(MINIMAL_MODELS)))
+CASE_FIELD_MAX_CHARS = 2000  # cap per-case text fields to keep reports small
 
 
 def ensure_base_tasks(seed: int):
@@ -171,11 +172,35 @@ def evaluate_agent(agent_dir: Path, problem_ids: List[int]):
     return results
 
 
+def _truncate_cases(result: dict, field_limit: int = CASE_FIELD_MAX_CHARS):
+    """Limit extremely long per-case text fields to avoid oversized reports."""
+    cases = result.get("cases")
+    if not isinstance(cases, list):
+        return result
+
+    trimmed_cases = []
+    for case in cases:
+        if not isinstance(case, dict):
+            trimmed_cases.append(case)
+            continue
+        trimmed = {}
+        for k, v in case.items():
+            if isinstance(v, str) and len(v) > field_limit:
+                trimmed[k] = v[:field_limit] + f"...[truncated {len(v) - field_limit} chars]"
+            else:
+                trimmed[k] = v
+        trimmed_cases.append(trimmed)
+
+    result["cases"] = trimmed_cases
+    return result
+
+
 def _run_eval_cmd(cmd: List[str], cwd: Path):
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip())
-    return json.loads(proc.stdout)
+    res = json.loads(proc.stdout)
+    return _truncate_cases(res)
 
 
 def summarize(results: List[dict]):

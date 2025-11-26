@@ -53,17 +53,17 @@ def _write_markdown(item: dict, local_id: int, target: Path):
 
     lines = [
         f"# Problem {local_id}",
-        f"Time Limit: {time_limit}s",
+        # f"Time Limit: {time_limit}s",
         "",
         desc,
     ]
 
-    if public_tests:
-        lines.append("\n## Samples (public tests)")
-        for i, t in enumerate(public_tests):
-            lines.append(f"### Sample {i+1}\nInput:\n````\n{t['input']}\n````\nOutput:\n````\n{t['output']}\n````")
-    if hidden_tests:
-        lines.append("\n## Hidden tests (for evaluation only)\nCount: %d" % len(hidden_tests))
+    # if public_tests:
+    #     lines.append("\n## Samples (public tests)")
+    #     for i, t in enumerate(public_tests):
+    #         lines.append(f"### Sample {i+1}\nInput:\n````\n{t['input']}\n````\nOutput:\n````\n{t['output']}\n````")
+    # if hidden_tests:
+    #     lines.append("\n## Hidden tests (for evaluation only)\nCount: %d" % len(hidden_tests))
 
     target.write_text("\n".join(lines), encoding="utf-8")
 
@@ -76,16 +76,6 @@ def _write_meta(problems, source: str, seed: int, out_path: Path):
         "problems": problems,
     }
     out_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _copy_support_files(dst: Path):
-    for fname in []:
-        src = ROOT / fname
-        if not src.exists():
-            continue
-        shutil.copy(src, dst / fname)
-        if fname.endswith(".sh"):
-            os.chmod(dst / fname, 0o755)
 
 
 def main():
@@ -176,8 +166,6 @@ int main() {
 """,
             encoding="utf-8",
         )
-
-    _copy_support_files(args.output_dir)
 
     print(f"Tasks generated at: {args.output_dir}")
     print("Files:")
