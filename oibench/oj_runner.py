@@ -6,6 +6,8 @@ import sys
 import time
 import tempfile
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
 from pathlib import Path
 from statistics import mean
 
@@ -118,15 +120,11 @@ def evaluate(problem_id: str, workdir: Path, max_time: float, program_path: Path
 
     if suffix == ".py":
         exec_cmd = [sys.executable, str(code_path)]
-        for t in tests:
-            cases.append(run_single(exec_cmd, t, max_time))
     elif suffix == ".cpp":
         try:
             tmp_dir = Path(tempfile.mkdtemp(prefix="oj_build_"))
             binary = _compile_cpp(code_path, tmp_dir)
             exec_cmd = [str(binary)]
-            for t in tests:
-                cases.append(run_single(exec_cmd, t, max_time))
         except Exception as e:
             return {
                 "problem_id": problem_id,
@@ -143,6 +141,13 @@ def evaluate(problem_id: str, workdir: Path, max_time: float, program_path: Path
             "cases": [],
             "message": f"Unsupported file type: {suffix}",
         }
+
+    # run tests in parallel up to CPU count
+    max_workers = os.cpu_count() or 4
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [ex.submit(run_single, exec_cmd, t, max_time) for t in tests]
+        for fut in futures:
+            cases.append(fut.result())
 
     statuses = [c["status"] for c in cases]
     if all(s == "AC" for s in statuses):

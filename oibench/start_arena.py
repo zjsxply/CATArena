@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import math
+import matplotlib.pyplot as plt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Dict
@@ -92,7 +93,7 @@ def build_prompt(
         "You have problems 0.md-10.md. 0 is an example (solution 0.cpp from the dataset). Problems 1-10 are the tasks to solve.",
         "Read all problems first, then solve in an order that maximizes solved count (do easy ones first).",
         "Write Python solutions to <id>.py for ids 1..10.",
-        "After writing code, self-test with `bash OJ.sh <id> <program_path>`. Time limit per test case: 2s.",
+        f"After writing code, self-test with `cd {agent_dir} && bash OJ.sh <id> <id>.py`. Time limit per test case: 2s.",
         "Total agent time budget: 30 minutes. Generate code without waiting for confirmation.",
     ]
     if round_id > 1:
@@ -232,6 +233,49 @@ def summarize(results: List[dict]):
     return pass_count, avg_time, detail
 
 
+def plot_scores(history: dict, agents: List[dict]):
+    if not history:
+        return
+    rounds = sorted(history.keys())
+    labels = [a["label"] for a in agents]
+    for label in labels:
+        ys = []
+        for r in rounds:
+            ys.append(history[r]["agents"].get(label, {}).get("pass_count", 0))
+        plt.plot(rounds, ys, marker="o", label=label)
+    plt.xlabel("Round")
+    plt.ylabel("Solved Count")
+    plt.xticks(rounds)
+    plt.grid(True, linestyle="--", alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    out_path = LEADERBOARD_ROOT / "scores_trend.png"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path)
+    plt.close()
+
+
+def write_history_txt(history: dict):
+    if not history:
+        return
+    lines = ["Round\tRank\tAgent\tSolved\tAvgTime(s)\tRunTime(s)"]
+    for r in sorted(history.keys(), key=lambda x: int(x)):
+        lb_path = history[r]["leaderboard_txt"]
+        lb = Path(lb_path)
+        if not lb.exists():
+            continue
+        # recompute ranks from stored data to include run time
+        agents = history[r]["agents"]
+        rows = []
+        for agent, data in agents.items():
+            rows.append((agent, data["pass_count"], data["avg_time"], data.get("run", {}).get("elapsed", float("nan"))))
+        rows.sort(key=lambda x: (-x[1], math.inf if math.isnan(x[2]) else x[2]))
+        for idx, (agent, solved, avg_time, run_time) in enumerate(rows, 1):
+            lines.append(f"{r}\t{idx}\t{agent}\t{solved}\t{avg_time:.3f}\t{run_time:.3f}")
+    out_path = LEADERBOARD_ROOT / "history.txt"
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def write_agent_report(agent_label: str, round_id: int, round_dir: Path, evals: List[dict], run_info: dict):
     report_dir = LEADERBOARD_ROOT / f"round_{round_id}"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -268,12 +312,12 @@ def build_leaderboard(round_id: int, agents_data: dict):
     lb_json = lb_dir / "leaderboard.json"
     lb_json.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    header = "Rank\tAgent\tSolved\tAvgTime(s)\tStatuses\tAnswerPath\tReportFile"
+    header = "Rank\tAgent\tRunTime(s)\tSolved\tAvgTime(s)\tStatuses\tAnswerPath\tReportFile"
     lines = [header]
     for idx, row in enumerate(rows, 1):
-        # detail already contains status per problem, but without time. Add avg times inline when AC.
+        run_time = agents_data[row['agent']].get("run", {}).get("elapsed", float("nan"))
         lines.append(
-            f"{idx}\t{row['agent']}\t{row['pass_count']}\t{row['avg_time']:.3f}\t{row['detail']}\t{row['answer_path']}\t{row['report_path']}"
+            f"{idx}\t{row['agent']}\t{run_time:.3f}\t{row['pass_count']}\t{row['avg_time']:.3f}\t{row['detail']}\t{row['answer_path']}\t{row['report_path']}"
         )
     lb_txt = lb_dir / "leaderboard.txt"
     lb_txt.write_text("\n".join(lines), encoding="utf-8")
@@ -412,6 +456,8 @@ def run_competition(rounds: int, agents: List[dict], timeout_minutes: int = 30, 
     print(f"Final leaderboard (Round {max(history.keys())}): {final_lb}")
 
     (LEADERBOARD_ROOT / "history.json").write_text(json.dumps(history, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    plot_scores(history, agents)
+    write_history_txt(history)
 
 
 def main():
